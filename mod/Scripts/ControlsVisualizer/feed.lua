@@ -111,7 +111,10 @@ function M.cockpit(base, text, now)
             and (e.held or now - (e.released_at or -math.huge) <= cfg.absorb_s) then
             if not e.absorbed then
                 e.absorbed = true
-                if e.text ~= text then e.text = text; changed() end
+                -- Only a position is news: a bare name ("Master Arm Switch",
+                -- modules without position labels) would hide a more specific
+                -- binding name ("Master Arm Switch - ON").
+                if e.text ~= text and text ~= base then e.text = text; changed() end
             end
             e.updated = math.max(e.updated, now)
             return

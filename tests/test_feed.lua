@@ -87,6 +87,12 @@ feed.input_up("a:TDC", 0.5)
 feed.input_down("a:TDC", "TDC", "TDC", 1.0, true)
 check("axis no counter", lines_at(1.1), "*TDC")
 
+-- A bare cockpit name doesn't replace a more specific binding name (JF-17)
+feed.reset()
+feed.input_tap("p:1", "Master Arm Switch", "Master Arm Switch - ON", 0.0)
+feed.cockpit("Master Arm Switch", "Master Arm Switch", 0.1)
+check("bare name keeps binding text", lines_at(0.2), "Master Arm Switch - ON")
+
 -- Oldest lines drop off past max_entries
 feed.reset()
 for i = 1, feed.config.max_entries + 2 do feed.cockpit("S" .. i, "Switch " .. i, i * 0.01) end

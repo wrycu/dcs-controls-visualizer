@@ -11,7 +11,16 @@ local clock = 0
 local handler
 local errors = {}
 
-lfs = { writedir = function() return "mod/" end, currentdir = function() return install end }
+-- lfs.dir via ls (standalone LuaJIT has no lfs)
+local function dir_iter(path)
+    local p = io.popen('ls -1 "' .. path .. '" 2>/dev/null')
+    local names = {}
+    for l in p:lines() do names[#names + 1] = l end
+    p:close()
+    local i = 0
+    return function() i = i + 1; return names[i] end
+end
+lfs = { writedir = function() return "mod/" end, currentdir = function() return install end, dir = dir_iter }
 log = { INFO = "INFO", ERROR = "ERROR", write = function(_, lvl, msg)
     if lvl == "ERROR" then errors[#errors + 1] = msg; print("LOG ERROR: " .. msg) end
 end }

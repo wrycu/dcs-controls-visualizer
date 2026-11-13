@@ -24,12 +24,9 @@ local CV = {
     toggle_hotkey = "Ctrl+Shift+V",
     poll_every_n_frames = 2,  -- cockpit switch reads
     log_controls = false,     -- also write each shown control to dcs.log
-    -- DCS unit type -> cockpit scripts folder, relative to the DCS install dir.
-    -- Input names work for every aircraft; switch positions and mouse clicks
-    -- need an entry here.
-    aircraft = {
-        ["FA-18C_hornet"] = "Mods/aircraft/FA-18C/Cockpit/Scripts/",
-    },
+    -- Cockpit scripts folders are found from each module's entry.lua; add
+    -- "unit type" = "folder relative to the DCS install dir" here only if that fails.
+    aircraft = {},
 }
 
 local base = lfs.writedir() .. "Scripts/ControlsVisualizer/"
@@ -38,6 +35,7 @@ local feed = require("feed")
 local cockpit_watch = require("cockpit_watch")
 local input_watch = require("input_watch")
 local overlay = require("overlay")
+local aircraft_dirs = require("aircraft_dirs")
 
 local function log_info(msg) log.write("ControlsVisualizer", log.INFO, msg) end
 local function log_err(msg) log.write("ControlsVisualizer", log.ERROR, msg) end
@@ -94,13 +92,16 @@ local function start_flight()
         log_info(unit_type .. " input: " .. tostring(msg))
     end
 
-    local rel = CV.aircraft[unit_type]
-    if rel then
-        local cok, msg = cockpit_watch.start(unit_type, lfs.currentdir() .. rel)
+    if not aircraft_dirs.find(unit_type) and not CV.aircraft[unit_type] then
+        aircraft_dirs.scan({ lfs.currentdir() .. "Mods/aircraft/", lfs.writedir() .. "Mods/aircraft/" }, lfs.dir)
+    end
+    local dir = CV.aircraft[unit_type] and (lfs.currentdir() .. CV.aircraft[unit_type]) or aircraft_dirs.find(unit_type)
+    if dir then
+        local cok, msg = cockpit_watch.start(unit_type, dir)
         cockpit_running = cok and true or false
         log_info(unit_type .. " cockpit: " .. tostring(msg))
     else
-        log_info(unit_type .. " cockpit: no clickables mapping, switch positions not shown")
+        log_info(unit_type .. " cockpit: no clickabledata.lua found, switch positions and mouse clicks not shown")
     end
     active = input_running or cockpit_running
 end

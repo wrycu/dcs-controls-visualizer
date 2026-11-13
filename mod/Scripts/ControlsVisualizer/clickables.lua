@@ -100,9 +100,13 @@ end
 M.clean_hint = clean_hint
 
 -- "Battery Switch, ON/OFF/ORIDE" -> "Battery Switch", {"ON","OFF","ORIDE"}
+-- "Light Switch - Land/Off/Taxi" (JF-17) -> "Light Switch", {"Land","Off","Taxi"}
 local function split_positions(hint)
     local name, positions = hint:match("^(.-),%s*([^,]+)$")
-    if not name or not positions:find("/") then return hint, nil end
+    if not (name and positions:find("/")) then
+        name, positions = hint:match("^(.-)%s+%-%s+([^%-]+)$")
+    end
+    if not (name and positions:find("/")) then return hint, nil end
     local list = {}
     for p in positions:gmatch("[^/]+") do list[#list + 1] = trim(p) end
     return name, list
