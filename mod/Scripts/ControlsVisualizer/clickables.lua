@@ -97,6 +97,7 @@ local function clean_hint(hint)
     if closes > opens then hint = hint:gsub("%)%s*$", "") end
     return trim(hint)
 end
+M.clean_hint = clean_hint
 
 -- "Battery Switch, ON/OFF/ORIDE" -> "Battery Switch", {"ON","OFF","ORIDE"}
 local function split_positions(hint)

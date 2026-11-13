@@ -1,30 +1,32 @@
--- DCS Controls Visualizer - hook entry point (Phase 0 prototype)
+-- DCS Controls Visualizer - hook entry point
 --
--- Shows the name of any cockpit control that moves, regardless of whether it
--- was moved by HOTAS, keyboard, mouse or VR hands.
+-- Shows the name of each cockpit control you use, e.g. "Gun Trigger - SECOND
+-- DETENT" or "Master Arm Switch: ARM", however you operated it: HOTAS,
+-- keyboard, mouse or VR hands.
 --
--- Install: copy the contents of mod/ into "Saved Games/DCS/". Output goes to on-screen
--- mission text (single player / when hosting) and to Logs/dcs.log.
+-- Install: copy the contents of mod/ into "Saved Games/DCS/".
+--
+-- Two sources, merged by feed.lua:
+--   input_watch.lua   - bound key/button presses, named from your control
+--                       bindings (catches HOTAS controls the cockpit doesn't
+--                       animate, like the trigger);
+--   cockpit_watch.lua - cockpit switches that moved (mouse/VR clicks, and
+--                       switch positions for input presses).
 
 local ok_init, init_err = pcall(function()
 
 local CV = {
-    poll_every_n_frames = 2,
-    change_threshold = 0.01,
-    settle_polls = 2,        -- a control counts as "done moving" after this many unchanged polls
-    display_seconds = 3,
-    -- Diagnostics: log every raw change of the tracked args, plus the extra
-    -- range below, to dcs.log ("raw f=<frame> arg=<n> <old> -> <new>"),
-    -- muting args that change constantly (gauges, needles). Cheap: only
-    -- logs on change, and reads at most debug_extra_args more args per poll.
-    debug_raw = false,
-    -- Experiment: log what Input.getInputActions() returns during flight.
-    input_probe = true,
-    -- Experiment step 2: also add a raw-button input layer on top (see input_probe.lua).
-    -- If any control stops working in flight, set this to false.
-    input_probe_layer = true,
-    debug_extra_args = { 470, 500 },
+    -- Take over bound HOTAS/cockpit-device buttons so they can be named, and
+    -- pass each one on to the aircraft (see input_watch.lua). With false,
+    -- those buttons are only seen when the cockpit animates them.
+    intercept_cockpit_bindings = true,
+    -- Show/hide the overlay (dxgui hotkey format, e.g. "Ctrl+Shift+V").
+    toggle_hotkey = "Ctrl+Shift+V",
+    poll_every_n_frames = 2,  -- cockpit switch reads
+    log_controls = false,     -- also write each shown control to dcs.log
     -- DCS unit type -> cockpit scripts folder, relative to the DCS install dir.
+    -- Input names work for every aircraft; switch positions and mouse clicks
+    -- need an entry here.
     aircraft = {
         ["FA-18C_hornet"] = "Mods/aircraft/FA-18C/Cockpit/Scripts/",
     },
@@ -32,211 +34,142 @@ local CV = {
 
 local base = lfs.writedir() .. "Scripts/ControlsVisualizer/"
 package.path = base .. "?.lua;" .. package.path
-local clickables = require("clickables")
+local feed = require("feed")
+local cockpit_watch = require("cockpit_watch")
+local input_watch = require("input_watch")
+local overlay = require("overlay")
 
 local function log_info(msg) log.write("ControlsVisualizer", log.INFO, msg) end
 local function log_err(msg) log.write("ControlsVisualizer", log.ERROR, msg) end
 
-local state = nil -- per-flight state, nil when inactive
-local frame = 0
-
-local function show(text)
-    log_info("control: " .. text)
-    local code = string.format("trigger.action.outText(%q, %d, true)", text, CV.display_seconds)
-    net.dostring_in("server", code)
+local function now()
+    if type(DCS.getRealTime) == "function" then return DCS.getRealTime() end
+    return os.clock()
 end
 
--- Hooks can't use net.dostring_in('export', ...) (blocked unless allowed in
--- autoexec.cfg), but they get the export functions on the `Export` table,
--- including GetDevice (confirmed in DCS 2.9 under Wine).
-local function find_cockpit_reader()
-    if type(Export) == "table" and type(Export.GetDevice) == "function" then
-        return function(a) return Export.GetDevice(0):get_argument_value(a) end, "Export.GetDevice"
-    end
-    if type(GetDevice) == "function" then
-        return function(a) return GetDevice(0):get_argument_value(a) end, "GetDevice"
-    end
-    return nil
+local input_ok = input_watch.init(log_info)
+if not input_ok then log_err("DCS input API not available; showing cockpit switches only") end
+
+local active = false   -- in an aircraft
+local input_running, cockpit_running = false, false
+local frame = 0
+local shown_version = -1
+local hidden = false   -- toggled with CV.toggle_hotkey; kept for the DCS session
+
+-- Fallback display when the overlay can't be created: mission text
+-- (single player / when hosting only).
+local function out_text(text)
+    local code = string.format("trigger.action.outText(%q, 3, true)", text)
+    pcall(net.dostring_in, "server", code)
+end
+
+local function stop_all()
+    active = false
+    if input_ok then pcall(input_watch.stop) end -- also cleans up a half-finished start
+    input_running, cockpit_running = false, false
+    cockpit_watch.stop()
+    feed.reset()
+    if overlay.available() then pcall(overlay.clear) end
 end
 
 local function start_flight()
-    state = nil
+    stop_all()
     local unit_type = DCS.getPlayerUnitType()
-    if not unit_type then return end
-    local rel = CV.aircraft[unit_type]
-    if not rel then
-        log_info("aircraft not supported yet: " .. tostring(unit_type))
-        return
-    end
-    local args, count = clickables.load(lfs.currentdir() .. rel)
-    if not args then
-        log_err("failed to load clickables for " .. unit_type .. ": " .. tostring(count))
-        return
-    end
-    local read_arg, via = find_cockpit_reader()
-    if not read_arg then
-        log_err("no way to read cockpit arguments from hooks")
-        return
-    end
-    local arg_list = {}
-    for a in pairs(args) do arg_list[#arg_list + 1] = a end
-    table.sort(arg_list)
-    state = {
-        unit_type = unit_type,
-        args = args,
-        arg_list = arg_list,
-        read_arg = read_arg,
-        tracks = nil, -- per-arg movement tracking, created on first poll
-    }
-    log_info(string.format("loaded %d controls (%d args) for %s; reading via %s",
-        count, #arg_list, unit_type, via))
-end
+    if not unit_type then return end -- spectator / not in a slot yet
 
--- Each arg is tracked through one "movement": it leaves its resting value,
--- animates, and settles. We report once per movement:
---   buttons  -> at the furthest point reached (picks the right direction on
---               shared hat args), whether tapped or held; not on release.
---   switches -> at the new resting position.
-local function track(info, t, v)
-    local thr = CV.change_threshold
-    if math.abs(v - t.prev) < thr then t.still = t.still + 1 else t.still = 0 end
-    t.prev = v
-
-    local away = math.abs(v - t.rest)
-    if away >= thr and (not t.peak or away > math.abs(t.peak - t.rest)) then
-        t.peak = v
-    end
-    if not t.peak or t.still < CV.settle_polls then return nil end
-
-    -- movement finished
-    if info.is_button then
-        local text = nil
-        if not t.reported then text = clickables.describe(info, t.peak) end
-        if math.abs(v - t.rest) < thr then
-            t.peak, t.reported = nil, false -- released: ready for the next press
+    local ok, err = overlay.create(base .. "overlay.dlg", CV.toggle_hotkey, function()
+        hidden = not hidden
+        if hidden then
+            pcall(overlay.clear)
         else
-            t.reported = true               -- still held: wait for release
+            feed.cockpit("Controls Visualizer", "Controls Visualizer shown", now())
         end
-        return text
+        log_info(hidden and "overlay hidden" or "overlay shown")
+    end)
+    if not ok then log_err("overlay unavailable, using mission text: " .. tostring(err)) end
+
+    if input_ok then
+        local iok, msg = input_watch.start(unit_type, feed, CV.intercept_cockpit_bindings)
+        input_running = iok and true or false
+        log_info(unit_type .. " input: " .. tostring(msg))
     end
 
-    local text = nil
-    if math.abs(v - t.rest) >= thr then text = clickables.describe(info, v) end
-    t.rest, t.peak = v, nil
-    return text
+    local rel = CV.aircraft[unit_type]
+    if rel then
+        local cok, msg = cockpit_watch.start(unit_type, lfs.currentdir() .. rel)
+        cockpit_running = cok and true or false
+        log_info(unit_type .. " cockpit: " .. tostring(msg))
+    else
+        log_info(unit_type .. " cockpit: no clickables mapping, switch positions not shown")
+    end
+    active = input_running or cockpit_running
 end
 
-local function debug_scan()
-    local raw = state.raw
-    if not raw then
-        raw = { last = {}, changes = {}, muted = {}, window_start = frame, list = {} }
-        state.raw = raw
-        local seen = {}
-        for _, a in ipairs(state.arg_list) do seen[a] = true; raw.list[#raw.list + 1] = a end
-        for a = CV.debug_extra_args[1], CV.debug_extra_args[2] do
-            if not seen[a] then raw.list[#raw.list + 1] = a end
-        end
-        for _, a in ipairs(raw.list) do raw.last[a] = state.read_arg(a) end
-        log_info("raw: baseline taken for " .. #raw.list .. " args")
-        return
-    end
-    if frame - raw.window_start > 120 then -- reset change counts every ~120 frames
-        raw.changes, raw.window_start = {}, frame
-    end
-    for _, a in ipairs(raw.list) do
-        local v = state.read_arg(a)
-        local old = raw.last[a]
-        if math.abs(v - old) >= 0.001 then
-            raw.last[a] = v
-            if not raw.muted[a] then
-                local n = (raw.changes[a] or 0) + 1
-                raw.changes[a] = n
-                if n > 30 then
-                    raw.muted[a] = true
-                    log_info(string.format("raw arg=%d changes constantly, muted", a))
-                else
-                    local info = state.args[a]
-                    log_info(string.format("raw f=%d arg=%d %.3f -> %.3f%s", frame, a, old, v,
-                        info and ("  (" .. info.hint .. ")") or ""))
-                end
-            end
-        end
-    end
+local function on_cockpit_report(name, text)
+    feed.cockpit(name, text, now())
 end
 
-local function poll()
-    if CV.debug_raw then debug_scan() end
-    local list, read_arg = state.arg_list, state.read_arg
-    if not state.tracks then
-        state.tracks = {}
-        for idx = 1, #list do
-            local v = read_arg(list[idx])
-            state.tracks[idx] = { rest = v, prev = v, still = 0 }
-        end
-        return
+local function update_display(t)
+    if hidden then return end
+    local lines = feed.visible(t)
+    if overlay.available() then
+        overlay.show(lines)
+    elseif feed.version() ~= shown_version and #lines > 0 then
+        out_text(lines[#lines].text)
     end
+    if CV.log_controls and feed.version() ~= shown_version and #lines > 0 then
+        log_info("control: " .. lines[#lines].text)
+    end
+    shown_version = feed.version()
+end
 
-    for idx = 1, #list do
-        local info = state.args[list[idx]]
-        local t = state.tracks[idx]
-        local text = track(info, t, read_arg(list[idx]))
-        if text then
-            if CV.debug_raw then
-                log_info(string.format("report f=%d arg=%d rest=%.3f peak=%s reported=%s",
-                    frame, list[idx], t.rest, tostring(t.peak), tostring(t.reported)))
-            end
-            show(text)
+local function step()
+    local t = now()
+    if input_running then
+        local ok, err = pcall(input_watch.frame, t)
+        if not ok then
+            -- The input layer owns HOTAS buttons: remove it so they go back to the sim.
+            log_err("input: " .. tostring(err) .. " - input naming switched off for this flight")
+            pcall(input_watch.stop)
+            input_running = false
         end
     end
+    frame = frame + 1
+    if cockpit_running and frame % CV.poll_every_n_frames == 0 then
+        local ok, err = pcall(cockpit_watch.poll, on_cockpit_report)
+        if not ok then
+            log_err("cockpit: " .. tostring(err))
+            cockpit_running = false
+        end
+    end
+    update_display(t)
 end
 
 local handler = {}
 
--- Input-action experiment (read-only), see ControlsVisualizer/input_probe.lua
-local probe = nil
-if CV.input_probe then
-    local ok, mod = pcall(require, "input_probe")
-    if ok and mod.init(log_info, { layer = CV.input_probe_layer }) then probe = mod
-    else log_err("probe unavailable: " .. tostring(mod)) end
-end
-
-local function probe_call(name)
-    if not probe then return end
-    local ok, err = pcall(probe[name])
-    if not ok then
-        log_err("probe " .. name .. ": " .. tostring(err))
-        -- The probe may own an input layer that HOTAS buttons now depend on:
-        -- remove it so those buttons go back to the sim.
-        pcall(probe.stop)
-        probe = nil
-    end
-end
-
 function handler.onSimulationStart()
     local ok, err = pcall(start_flight)
-    if not ok then log_err("start: " .. tostring(err)) end
-    probe_call("start_flight")
+    if not ok then log_err("start: " .. tostring(err)); pcall(stop_all) end
 end
 
-function handler.onPlayerChangeSlot()
+function handler.onPlayerChangeSlot(id)
+    -- fires for every player in multiplayer; only react to our own
+    local me = type(net.get_my_player_id) == "function" and net.get_my_player_id() or id
+    if id ~= me then return end
     local ok, err = pcall(start_flight)
-    if not ok then log_err("slot change: " .. tostring(err)) end
+    if not ok then log_err("slot change: " .. tostring(err)); pcall(stop_all) end
 end
 
 function handler.onSimulationStop()
-    state = nil
-    probe_call("stop")
+    pcall(stop_all)
 end
 
 function handler.onSimulationFrame()
-    probe_call("frame")
-    if not state then return end
-    frame = frame + 1
-    if frame % CV.poll_every_n_frames ~= 0 then return end
-    local ok, err = pcall(poll)
+    if not active then return end
+    local ok, err = pcall(step)
     if not ok then
-        log_err("poll: " .. tostring(err))
-        state = nil -- stop spamming the log
+        log_err("frame: " .. tostring(err))
+        pcall(stop_all)
     end
 end
 
