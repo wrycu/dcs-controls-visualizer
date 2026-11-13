@@ -3,6 +3,9 @@
 This is a simple DCS World script that shows the (DCS) names of controls being 
 pressed live. Very handy for telling/showing others what you're doing!
 
+<img width="3440" height="1440" alt="image" src="https://github.com/user-attachments/assets/d1469595-f175-4203-8590-b149643b8908" />
+
+
 The UI can be toggled on/off with `CTRL`+`SHIFT`+`V`.
 
 # Installing
