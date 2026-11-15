@@ -49,6 +49,10 @@ local input_ok = input_watch.init(log_info)
 if not input_ok then log_err("DCS input API not available; showing cockpit switches only") end
 
 local active = false   -- in an aircraft
+local waiting = false  -- sim running, no player unit yet (single player: it can
+                       -- appear after onSimulationStart); retried from frames
+local last_try = -math.huge
+local waiting_logged = false
 local input_running, cockpit_running = false, false
 local frame = 0
 local shown_version = -1
@@ -63,6 +67,7 @@ end
 
 local function stop_all()
     active = false
+    waiting = false
     if input_ok then pcall(input_watch.stop) end -- also cleans up a half-finished start
     input_running, cockpit_running = false, false
     cockpit_watch.stop()
@@ -73,7 +78,17 @@ end
 local function start_flight()
     stop_all()
     local unit_type = DCS.getPlayerUnitType()
-    if not unit_type then return end -- spectator / not in a slot yet
+    if not unit_type or unit_type == "" then
+        -- spectator / not in a slot yet: try again from onSimulationFrame
+        waiting = true
+        if not waiting_logged then
+            log_info("no player unit yet, waiting for one")
+            waiting_logged = true
+        end
+        return
+    end
+    waiting_logged = false
+    log_info("starting for " .. unit_type)
 
     local ok, err = overlay.create(base .. "overlay.dlg", CV.toggle_hotkey, function()
         hidden = not hidden
@@ -163,9 +178,19 @@ end
 
 function handler.onSimulationStop()
     pcall(stop_all)
+    waiting_logged = false
 end
 
 function handler.onSimulationFrame()
+    if waiting then
+        local t = now()
+        if t - last_try >= 1 then
+            last_try = t
+            local ok, err = pcall(start_flight)
+            if not ok then log_err("start: " .. tostring(err)); pcall(stop_all) end
+        end
+        return
+    end
     if not active then return end
     local ok, err = pcall(step)
     if not ok then

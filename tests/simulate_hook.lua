@@ -8,6 +8,7 @@ local pending_actions = {} -- returned by the next Input.getInputActions()
 local forwarded = {}       -- performClickableAction calls
 local stack = { "Debug", "Unit FA-18C_hornet" }
 local clock = 0
+local player_unit = nil    -- single player: no unit yet at onSimulationStart
 local handler
 local errors = {}
 
@@ -26,7 +27,7 @@ log = { INFO = "INFO", ERROR = "ERROR", write = function(_, lvl, msg)
 end }
 net = { dostring_in = function() end, get_my_player_id = function() return 1 end }
 DCS = {
-    getPlayerUnitType = function() return "FA-18C_hornet" end,
+    getPlayerUnitType = function() return player_unit end,
     setUserCallbacks = function(h) handler = h end,
     getRealTime = function() return clock end,
     getInputNameByUnitType = function(u) return u end,
@@ -126,10 +127,15 @@ local function screen()
 end
 
 dofile("mod/Scripts/Hooks/ControlsVisualizer.lua")
+local function frames(n) for _ = 1, n do clock = clock + 0.02; handler.onSimulationFrame() end end
 handler.onSimulationStart()
+frames(100) -- 2 s with no player unit
+assert(stack[1] == "Debug", "started without a player unit")
+player_unit = "FA-18C_hornet"
+frames(100) -- unit appears: picked up by the retry
+assert(stack[1] ~= "Debug", "did not start once the player unit appeared")
 print("stack in flight: {" .. table.concat(stack, ", ") .. "}")
 
-local function frames(n) for _ = 1, n do clock = clock + 0.02; handler.onSimulationFrame() end end
 local function idle() frames(400) end -- 8 s: everything expires
 
 local function scenario(name, fn)
