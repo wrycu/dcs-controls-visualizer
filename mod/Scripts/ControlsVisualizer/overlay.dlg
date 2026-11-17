@@ -1,5 +1,6 @@
 -- On-screen list of recent controls. Loaded with DialogLoader; the Box panel
--- is resized to fit its lines and the Static templates give the text skins.
+-- is resized to fit its lines, the Static templates give the text skins and
+-- the Edge panels the colours of the frames drawn around boxed words.
 dialog = {
     ["children"] = {
         ["Box"] = {
@@ -16,6 +17,40 @@ dialog = {
                 ["params"] = { ["name"] = "panelSkin" },
                 ["states"] = {
                     ["released"] = { [1] = { ["bkg"] = { ["center_center"] = "0x0000008c" } } },
+                },
+            },
+            ["type"] = "Panel",
+        },
+        ["EdgeNormal"] = {
+            ["params"] = {
+                ["bounds"] = { ["h"] = 1, ["w"] = 1, ["x"] = 0, ["y"] = 0 },
+                ["enabled"] = true,
+                ["text"] = "",
+                ["tooltip"] = "",
+                ["visible"] = false,
+                ["zindex"] = 0,
+            },
+            ["skin"] = {
+                ["params"] = { ["name"] = "panelSkin" },
+                ["states"] = {
+                    ["released"] = { [1] = { ["bkg"] = { ["center_center"] = "0xe8e8e8ff" } } },
+                },
+            },
+            ["type"] = "Panel",
+        },
+        ["EdgeHeld"] = {
+            ["params"] = {
+                ["bounds"] = { ["h"] = 1, ["w"] = 1, ["x"] = 0, ["y"] = 0 },
+                ["enabled"] = true,
+                ["text"] = "",
+                ["tooltip"] = "",
+                ["visible"] = false,
+                ["zindex"] = 0,
+            },
+            ["skin"] = {
+                ["params"] = { ["name"] = "panelSkin" },
+                ["states"] = {
+                    ["released"] = { [1] = { ["bkg"] = { ["center_center"] = "0xfbb941ff" } } },
                 },
             },
             ["type"] = "Panel",

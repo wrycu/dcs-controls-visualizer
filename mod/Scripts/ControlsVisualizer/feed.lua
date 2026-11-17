@@ -72,7 +72,7 @@ function M.input_down(id, base, text, now, no_count)
         end
     end
     local last = entries[#entries]
-    if last and last.source == "input" and not last.held and last.text == text
+    if last and last.source == "input" and not last.held and last.text == text and not last.box
         and now - last.updated <= cfg.repeat_s then
         -- axes (no_count) just light the same line up again
         if not no_count then last.count = last.count + 1 end
@@ -121,7 +121,8 @@ function M.cockpit(base, text, now)
         end
     end
     local last = entries[#entries]
-    if last and last.source == "cockpit" and last.text == text and now - last.updated <= cfg.repeat_s then
+    if last and last.source == "cockpit" and last.text == text and not last.box
+        and now - last.updated <= cfg.repeat_s then
         last.count = last.count + 1
         last.updated = now
         changed()
@@ -130,14 +131,33 @@ function M.cockpit(base, text, now)
     push({ source = "cockpit", base = base, text = text, count = 1, updated = now })
 end
 
---- Lines to show now, oldest first. Each is { text = ..., held = bool }.
+--- Replace the text of the newest entry showing `old_text` (what a control
+--- did, known only after the press: "... (1B)" -> "... (1B -> 2B)").
+-- @param box optional { word =, boxed = }: a word in the text the display
+--            boxes (boxed = true) or could box (false); drawn as a frame
+-- @return true if an entry was updated
+function M.retext(old_text, new_text, now, box)
+    for i = #entries, 1, -1 do
+        local e = entries[i]
+        if e.text == old_text and not e.box then
+            e.text, e.box = new_text, box
+            e.count = 1 -- a different line now; don't carry "x3" over
+            e.updated = math.max(e.updated, now)
+            changed()
+            return true
+        end
+    end
+    return false
+end
+
+--- Lines to show now, oldest first. Each is { text = ..., held = bool, box = nil|{word=, boxed=} }.
 function M.visible(now)
     local out = {}
     for _, e in ipairs(entries) do
         if e.held or now - e.updated <= M.config.display_s then
             local text = e.text
             if e.count > 1 then text = text .. "  x" .. e.count end
-            out[#out + 1] = { text = text, held = e.held or false }
+            out[#out + 1] = { text = text, held = e.held or false, box = e.box }
         end
     end
     return out

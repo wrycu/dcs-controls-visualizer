@@ -155,9 +155,15 @@ end
 
 --- Start for the player's aircraft. Returns true and a summary, or nil and a reason.
 -- @param intercept also take over cockpit-device bindings (see top of file)
+local profile_commands = {}
+
+--- Key commands of the input profile loaded by the last start().
+function M.commands() return profile_commands end
+
 function M.start(unit_type, feed_sink, intercept)
     M.stop()
     local profile, commands, modifiers, axis_commands = load_profile(unit_type)
+    profile_commands = commands
     if #commands == 0 then return nil, "no input profile for " .. tostring(unit_type) end
 
     local cockpit_cmds = {}

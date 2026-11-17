@@ -93,6 +93,28 @@ feed.input_tap("p:1", "Master Arm Switch", "Master Arm Switch - ON", 0.0)
 feed.cockpit("Master Arm Switch", "Master Arm Switch", 0.1)
 check("bare name keeps binding text", lines_at(0.2), "Master Arm Switch - ON")
 
+-- retext: a shown line updated once the press's result is known
+feed.reset()
+feed.cockpit("Right MDI PB 6", "Right MDI PB 6 (1B)", 0.0)
+feed.cockpit("Right MDI PB 6", "Right MDI PB 6 (1B)", 0.1)
+check("before retext", lines_at(0.2), "Right MDI PB 6 (1B)  x2")
+feed.retext("Right MDI PB 6 (1B)", "Right MDI PB 6 (1B -> 2B)", 0.3)
+check("after retext", lines_at(0.4), "Right MDI PB 6 (1B -> 2B)")
+feed.cockpit("Right MDI PB 6", "Right MDI PB 6 (2B)", 0.5)
+check("next press is its own line", lines_at(0.6), "Right MDI PB 6 (1B -> 2B) | Right MDI PB 6 (2B)")
+
+-- retext with a box state: kept on the line, and a repeat press gets its own line
+feed.reset()
+feed.cockpit("Left MDI PB 11", "Left MDI PB 11 (WYPT)", 0.0)
+feed.retext("Left MDI PB 11 (WYPT)", "Left MDI PB 11 (WYPT)", 0.2, { word = "WYPT", boxed = true })
+local l = feed.visible(0.3)[1]
+check("box kept", tostring(l.box and l.box.word) .. " " .. tostring(l.box and l.box.boxed), "WYPT true")
+feed.cockpit("Left MDI PB 11", "Left MDI PB 11 (WYPT)", 0.5)
+check("boxed line not counted", lines_at(0.6), "Left MDI PB 11 (WYPT) | Left MDI PB 11 (WYPT)")
+feed.retext("Left MDI PB 11 (WYPT)", "Left MDI PB 11 (WYPT)", 0.7, { word = "WYPT", boxed = false })
+local v = feed.visible(0.8)
+check("second press updated", tostring(v[1].box.boxed) .. " " .. tostring(v[2].box.boxed), "true false")
+
 -- Oldest lines drop off past max_entries
 feed.reset()
 for i = 1, feed.config.max_entries + 2 do feed.cockpit("S" .. i, "Switch " .. i, i * 0.01) end

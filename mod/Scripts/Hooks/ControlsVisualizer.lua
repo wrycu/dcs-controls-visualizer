@@ -24,6 +24,16 @@ local CV = {
     toggle_hotkey = "Ctrl+Shift+V",
     poll_every_n_frames = 2,  -- cockpit switch reads
     log_controls = false,     -- also write each shown control to dcs.log
+    -- Add what an MFD pushbutton does on the page it was pressed on:
+    -- "Left MDI PB 12 (WYPT up)", "UFC Option Select Pushbutton 3 (BALT)".
+    -- F/A-18C only. Needs export_indications.lua
+    -- loaded from Scripts/Export.lua (see README).
+    name_mfd_buttons = true,
+    -- Write every cockpit display's text to Logs/ControlsVisualizer-indications.log
+    -- when an MFD pushbutton (OSB) is pressed, at the press and 1 s later
+    -- (see indication_debug.lua).
+    -- Needs export_indications.lua loaded from Scripts/Export.lua.
+    debug_indications = false,
     -- Cockpit scripts folders are found from each module's entry.lua; add
     -- "unit type" = "folder relative to the DCS install dir" here only if that fails.
     aircraft = {},
@@ -36,6 +46,10 @@ local cockpit_watch = require("cockpit_watch")
 local input_watch = require("input_watch")
 local overlay = require("overlay")
 local aircraft_dirs = require("aircraft_dirs")
+local indication_debug = require("indication_debug")
+local indications = require("indications")
+local mfd_labels = require("mfd_labels")
+local button_followup = require("button_followup")
 
 local function log_info(msg) log.write("ControlsVisualizer", log.INFO, msg) end
 local function log_err(msg) log.write("ControlsVisualizer", log.ERROR, msg) end
@@ -54,6 +68,9 @@ local waiting = false  -- sim running, no player unit yet (single player: it can
 local last_try = -math.huge
 local waiting_logged = false
 local input_running, cockpit_running = false, false
+local debug_running = false
+local mfd_db = nil          -- mfd_labels database for this flight
+local indications_running = false
 local frame = 0
 local shown_version = -1
 local hidden = false   -- toggled with CV.toggle_hotkey; kept for the DCS session
@@ -70,9 +87,40 @@ local function stop_all()
     waiting = false
     if input_ok then pcall(input_watch.stop) end -- also cleans up a half-finished start
     input_running, cockpit_running = false, false
+    debug_running = false
+    pcall(indication_debug.stop)
+    mfd_db, indications_running = nil, false
+    pcall(indications.stop)
+    pcall(button_followup.stop)
     cockpit_watch.stop()
     feed.reset()
     if overlay.available() then pcall(overlay.clear) end
+end
+
+-- "Left MDI PB 12" -> "Left MDI PB 12 (WYPT up)", "UFC Option Select
+-- Pushbutton 3" -> "... (BALT)", from what that display
+-- shows right now (the Hornet acts on release, so that's the page the button
+-- was pressed on). Anything else, or no label: unchanged.
+local function decorate(text, get_text)
+    if not mfd_db then return text end
+    local ok, result = pcall(function()
+        local label = mfd_labels.label_for(mfd_db, text, get_text)
+        if not label then return text end
+        return text .. " (" .. label .. ")"
+    end)
+    return ok and result or text
+end
+
+-- Report a control: shown with its MFD label from when the press began
+-- (`since`; a mouse click is reported only after the button is back up, when
+-- the display may already show the result), and updated with what the press
+-- did once the display shows it (button_followup.lua).
+local function shown_text(text, t, since)
+    local get_text = indications.get
+    if since then get_text = function(id) return indications.get_at(id, since) end end
+    local shown = decorate(text, get_text)
+    if shown ~= text then pcall(button_followup.press, text, shown, t, get_text) end
+    return shown
 end
 
 local function start_flight()
@@ -101,18 +149,59 @@ local function start_flight()
     end)
     if not ok then log_err("overlay unavailable, using mission text: " .. tostring(err)) end
 
-    if input_ok then
-        local iok, msg = input_watch.start(unit_type, feed, CV.intercept_cockpit_bindings)
-        input_running = iok and true or false
-        log_info(unit_type .. " input: " .. tostring(msg))
-    end
-
     if not aircraft_dirs.find(unit_type) and not CV.aircraft[unit_type] then
         aircraft_dirs.scan({ lfs.currentdir() .. "Mods/aircraft/", lfs.writedir() .. "Mods/aircraft/" }, lfs.dir)
     end
     local dir = CV.aircraft[unit_type] and (lfs.currentdir() .. CV.aircraft[unit_type]) or aircraft_dirs.find(unit_type)
+
+    if CV.name_mfd_buttons and dir and mfd_labels.aircraft[unit_type] then
+        local lok, db, msg = pcall(mfd_labels.load, unit_type, dir, lfs.currentdir() .. "Scripts/Aircrafts/_Common/Cockpit/")
+        if lok and db then
+            local iok, ierr = indications.start(log_info)
+            if iok then
+                mfd_db, indications_running = db, true
+                button_followup.start(db, indications.get)
+                log_info(unit_type .. " MFD buttons: " .. tostring(msg))
+            else
+                log_err("MFD buttons off: " .. tostring(ierr))
+            end
+        else
+            log_err("MFD buttons off: " .. tostring(lok and msg or db))
+        end
+    end
+
+    if CV.debug_indications then
+        local dok, derr = pcall(indication_debug.start, log_info,
+            lfs.writedir() .. "Logs/ControlsVisualizer-indications.log")
+        debug_running = dok and derr or false
+        if not dok then log_err("indication debug: " .. tostring(derr)) end
+        indications_running = indications_running or debug_running
+    end
+
+    -- Input reports get MFD button labels added, and go past the debug dump.
+    local sink = feed
+    if mfd_db or debug_running then
+        sink = setmetatable({
+            input_down = function(id, base, text, t, no_count)
+                if debug_running then pcall(indication_debug.on_report, "input", base, text, t) end
+                feed.input_down(id, base, shown_text(text, t), t, no_count)
+            end,
+            input_tap = function(id, base, text, t)
+                if debug_running then pcall(indication_debug.on_report, "input", base, text, t) end
+                feed.input_tap(id, base, shown_text(text, t), t)
+            end,
+        }, { __index = feed })
+    end
+
+    if input_ok then
+        local iok, msg = input_watch.start(unit_type, sink, CV.intercept_cockpit_bindings)
+        input_running = iok and true or false
+        log_info(unit_type .. " input: " .. tostring(msg))
+    end
+
     if dir then
-        local cok, msg = cockpit_watch.start(unit_type, dir)
+        local commands = input_running and input_watch.commands() or nil
+        local cok, msg = cockpit_watch.start(unit_type, dir, commands)
         cockpit_running = cok and true or false
         log_info(unit_type .. " cockpit: " .. tostring(msg))
     else
@@ -121,8 +210,10 @@ local function start_flight()
     active = input_running or cockpit_running
 end
 
-local function on_cockpit_report(name, text)
-    feed.cockpit(name, text, now())
+local function on_cockpit_report(name, text, since)
+    local t = now()
+    if debug_running then pcall(indication_debug.on_report, "cockpit", name, text, t) end
+    feed.cockpit(name, shown_text(text, t, since), t)
 end
 
 local function update_display(t)
@@ -131,16 +222,24 @@ local function update_display(t)
     if overlay.available() then
         overlay.show(lines)
     elseif feed.version() ~= shown_version and #lines > 0 then
-        out_text(lines[#lines].text)
+        out_text(overlay.with_box_words(lines[#lines]))
     end
     if CV.log_controls and feed.version() ~= shown_version and #lines > 0 then
-        log_info("control: " .. lines[#lines].text)
+        log_info("control: " .. overlay.with_box_words(lines[#lines]))
     end
     shown_version = feed.version()
 end
 
 local function step()
     local t = now()
+    if indications_running then
+        local ok, err = pcall(indications.poll, t) -- before anything reads display text
+        if not ok then log_err("indications: " .. tostring(err)); indications_running = false end
+    end
+    if mfd_db then
+        local ok, err = pcall(button_followup.frame, t, feed.retext)
+        if not ok then log_err("button follow-up: " .. tostring(err)); button_followup.stop() end
+    end
     if input_running then
         local ok, err = pcall(input_watch.frame, t)
         if not ok then
@@ -152,11 +251,15 @@ local function step()
     end
     frame = frame + 1
     if cockpit_running and frame % CV.poll_every_n_frames == 0 then
-        local ok, err = pcall(cockpit_watch.poll, on_cockpit_report)
+        local ok, err = pcall(cockpit_watch.poll, on_cockpit_report, t)
         if not ok then
             log_err("cockpit: " .. tostring(err))
             cockpit_running = false
         end
+    end
+    if debug_running then
+        local ok, err = pcall(indication_debug.frame, t)
+        if not ok then log_err("indication debug: " .. tostring(err)); debug_running = false end
     end
     update_display(t)
 end
